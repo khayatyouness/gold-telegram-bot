@@ -1,0 +1,36 @@
+name: BTC Level Alert
+
+# BTC se traite 24/7 -> verification tous les jours (le script filtre 7h-22h Paris).
+on:
+  schedule:
+    - cron: "*/15 5-21 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: btc-alert
+  cancel-in-progress: false
+
+jobs:
+  level-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SYMBOL: "BTC-USD"
+      ASSET_SHORT: "BTC"
+      ALERT_INTERVAL_MIN: "20"
+      ALERT_TOUCH_EPS: "0"        # BTC volatil : on n'alerte que sur cassure reelle
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check BTC key levels
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python3 alert_levels.py --force
+          else
+            python3 alert_levels.py
+          fi

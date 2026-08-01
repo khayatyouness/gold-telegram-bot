@@ -16,7 +16,7 @@ Options : --force (ignore la plage horaire), --dry-run
 import os, sys, json, time, argparse, urllib.request
 import gold_report as gr
 
-BASE = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
+BASE = f"https://query1.finance.yahoo.com/v8/finance/chart/{gr.SYMBOL}"
 INTERVAL_MIN = int(os.environ.get("ALERT_INTERVAL_MIN", "15"))
 TOUCH_EPS = float(os.environ.get("ALERT_TOUCH_EPS", "1.5"))
 RSI_TF = os.environ.get("RSI_TF", "15m")          # timeframe du RSI intraday
@@ -339,7 +339,7 @@ def _strength(n):
 # ---------- message ----------
 def build_alert(level_events, rsi_events, ichi_events, ob_events, price):
     f = lambda x: ("{:,.1f}".format(x)).replace(",", " ")
-    L = ["<b>\U0001F6A8 ALERTE GOLD</b>"]
+    L = [f"<b>\U0001F6A8 ALERTE {gr.ASSET_SHORT}</b>"]
     L.append(f"Prix actuel : <b>{f(price)}$</b>")
     L.append("")
     conf = compute_confluence(level_events, rsi_events, ichi_events, ob_events)

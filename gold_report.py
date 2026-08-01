@@ -20,10 +20,17 @@ import os, sys, json, argparse, urllib.request, urllib.parse
 import datetime as dt
 from xml.etree import ElementTree as ET
 
-CHART_URL = ("https://query1.finance.yahoo.com/v8/finance/chart/"
-             "GC=F?range=1y&interval=1d")
+# Actif configurable (defaut : OR). Surcharge via variables d'environnement.
+SYMBOL = os.environ.get("SYMBOL", "GC=F")
+ASSET_NAME = os.environ.get("ASSET_NAME", "GOLD (XAU/USD)")
+ASSET_EMOJI = os.environ.get("ASSET_EMOJI", "\U0001F947")   # 🥇
+ASSET_SHORT = os.environ.get("ASSET_SHORT", "GOLD")
+NEWS_QUERY = os.environ.get("NEWS_QUERY", "gold+price+XAUUSD+fed+dollar")
+
+CHART_URL = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
+             f"{SYMBOL}?range=1y&interval=1d")
 NEWS_URL = ("https://news.google.com/rss/search?"
-            "q=gold+price+XAUUSD+fed+dollar+when:1d&hl=en-US&gl=US&ceid=US:en")
+            f"q={NEWS_QUERY}+when:1d&hl=en-US&gl=US&ceid=US:en")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 HOUR_START, HOUR_END = 7, 22           # Europe/Paris
 TZ_NAME = "Europe/Paris"
@@ -169,7 +176,7 @@ def analyse():
 def build_message(a, news):
     now = dt.datetime.now(dt.timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     f = lambda x: ("{:,.1f}".format(x)).replace(",", " ") if x is not None else "-"
-    L = [f"<b>\U0001F947 GOLD (XAU/USD) — {now}</b>"]
+    L = [f"<b>{ASSET_EMOJI} {ASSET_NAME} — {now}</b>"]
     sign = "+" if a["chg_pct"] >= 0 else ""
     L.append(f"Prix : <b>{f(a['price'])}$</b> ({sign}{a['chg_pct']:.2f}% j)")
     L.append(f"{a['emoji']} Biais technique : <b>{a['bias']}</b>")
@@ -248,7 +255,7 @@ def main():
         news = fetch_news()
         msg = build_message(a, news)
     except Exception as e:
-        err = (f"⚠️ GOLD bot : erreur analyse ({type(e).__name__}: {e}). "
+        err = (f"⚠️ {ASSET_SHORT} bot : erreur analyse ({type(e).__name__}: {e}). "
                "Prochaine tentative a la prochaine heure.")
         if args.dry_run:
             print("ERREUR:", e)
