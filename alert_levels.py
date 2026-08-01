@@ -29,6 +29,8 @@ ICHI_WINDOW_MIN = float(os.environ.get("ICHI_WINDOW_MIN", "16"))  # anti-doublon
 OB_TFS = [x.strip() for x in os.environ.get("OB_TFS", "15m,30m,60m,4h").split(",") if x.strip()]
 OB_LOOKBACK = int(os.environ.get("OB_LOOKBACK", "120"))   # bougies scannees
 OB_DISPL = float(os.environ.get("OB_DISPL", "1.0"))       # force de l'impulsion (x range moyen)
+# Confluence : nb minimal de signaux alignes dans le meme sens pour la signaler.
+CONFLUENCE_MIN = int(os.environ.get("CONFLUENCE_MIN", "2"))
 
 
 def parse_ichi_tfs():
@@ -303,12 +305,50 @@ def detect_order_blocks(rows, tf):
     return events[:2]
 
 
+# ---------- Confluence ----------
+def compute_confluence(level_events, rsi_events, ichi_events, ob_events):
+    """Regroupe tous les signaux frais par biais. Retourne (biais, mot, n, [labels])
+    si >= CONFLUENCE_MIN signaux s'alignent nettement dans le meme sens, sinon None."""
+    c = []
+    for name, val, direction, kind in level_events:
+        c.append((f"Niveau {name}", "achat" if "haussiere" in direction else "vente"))
+    for label, val, biais in rsi_events:
+        c.append(("RSI", biais))
+    for tf, label, biais in ichi_events:
+        c.append((f"Ichimoku {tf}", biais))
+    for tf, label, biais, zl, zh in ob_events:
+        c.append((f"OB {tf}", biais))
+
+    bulls = [x[0] for x in c if x[1] == "achat"]
+    bears = [x[0] for x in c if x[1] == "vente"]
+    if len(bulls) >= CONFLUENCE_MIN and len(bulls) > len(bears):
+        return ("achat", "HAUSSIERE \U0001F7E2", len(bulls), bulls)
+    if len(bears) >= CONFLUENCE_MIN and len(bears) > len(bulls):
+        return ("vente", "BAISSIERE \U0001F534", len(bears), bears)
+    return None
+
+
+def _strength(n):
+    if n >= 4:
+        return "TRES FORTE \U0001F525\U0001F525"
+    if n == 3:
+        return "FORTE \U0001F525"
+    return "MODEREE"
+
+
 # ---------- message ----------
 def build_alert(level_events, rsi_events, ichi_events, ob_events, price):
     f = lambda x: ("{:,.1f}".format(x)).replace(",", " ")
     L = ["<b>\U0001F6A8 ALERTE GOLD</b>"]
     L.append(f"Prix actuel : <b>{f(price)}$</b>")
     L.append("")
+    conf = compute_confluence(level_events, rsi_events, ichi_events, ob_events)
+    if conf:
+        biais, mot, n, labels = conf
+        L.append(f"<b>\U0001F3AF\U0001F525 CONFLUENCE {_strength(n)}</b>")
+        L.append(f"<b>{n} signaux alignes</b> — biais <b>{mot}</b>")
+        L.append("(" + ", ".join(labels) + ")")
+        L.append("")
     if level_events:
         L.append("<b>\U0001F3AF Niveau cle</b>")
         for name, val, direction, kind in level_events:
