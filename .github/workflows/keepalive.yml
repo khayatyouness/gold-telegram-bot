@@ -1,0 +1,33 @@
+name: Keepalive
+
+# Empeche GitHub de desactiver les workflows planifies apres 60 jours
+# d'inactivite : ce job fait un petit commit chaque semaine, ce qui garde
+# le depot "actif" et maintient le workflow "Gold Analysis Telegram" en vie.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"     # chaque lundi a 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Commit keepalive timestamp
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .keepalive
+          git add .keepalive
+          git commit -m "chore: keepalive $(date -u +%F)" || { echo "rien a committer"; exit 0; }
+          git push
