@@ -1,0 +1,37 @@
+name: Gold Level Alert
+
+# Alerte quand le prix de l'OR franchit / teste un niveau cle.
+# Verifie toutes les 15 min (jours de bourse), 05:00-21:00 UTC.
+# Le script filtre l'heure locale Europe/Paris (7h-22h) et n'alerte que sur
+# les croisements recents (~20 min) -> pas de spam.
+
+on:
+  schedule:
+    - cron: "*/15 5-21 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: gold-alert
+  cancel-in-progress: false
+
+jobs:
+  level-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check key levels
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ALERT_INTERVAL_MIN: "20"
+          ALERT_TOUCH_EPS: "1.5"
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python3 alert_levels.py --force
+          else
+            python3 alert_levels.py
+          fi
