@@ -25,6 +25,10 @@ RSI_OS = float(os.environ.get("RSI_OS", "30"))    # seuil survente
 # Ichimoku multi-timeframes : liste "tf:range" separee par des virgules.
 ICHI_TFS = os.environ.get("ICHI_TFS", "15m:1mo,60m:3mo")
 ICHI_WINDOW_MIN = float(os.environ.get("ICHI_WINDOW_MIN", "16"))  # anti-doublon
+# Order Blocks (Smart Money) : timeframes surveilles.
+OB_TFS = [x.strip() for x in os.environ.get("OB_TFS", "15m,30m,60m,4h").split(",") if x.strip()]
+OB_LOOKBACK = int(os.environ.get("OB_LOOKBACK", "120"))   # bougies scannees
+OB_DISPL = float(os.environ.get("OB_DISPL", "1.0"))       # force de l'impulsion (x range moyen)
 
 
 def parse_ichi_tfs():
@@ -67,6 +71,42 @@ def fetch_ohlc_series(interval, rng):
     h, l, c = q["high"], q["low"], q["close"]
     return [(ts[i], h[i], l[i], c[i]) for i in range(len(c))
             if None not in (h[i], l[i], c[i])]
+
+
+def fetch_ohlc4(interval, rng):
+    """Retourne [(ts, open, high, low, close)]."""
+    url = f"{BASE}?range={rng}&interval={interval}"
+    req = urllib.request.Request(url, headers={"User-Agent": gr.UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.load(r)
+    res = data["chart"]["result"][0]
+    ts = res["timestamp"]
+    q = res["indicators"]["quote"][0]
+    o, h, l, c = q["open"], q["high"], q["low"], q["close"]
+    return [(ts[i], o[i], h[i], l[i], c[i]) for i in range(len(c))
+            if None not in (o[i], h[i], l[i], c[i])]
+
+
+def resample(rows, bucket_sec):
+    """Agrege des bougies OHLC (ts,o,h,l,c) en bougies alignees sur bucket_sec."""
+    buckets, order = {}, []
+    for ts, o, h, l, c in rows:
+        b = ts - (ts % bucket_sec)
+        if b not in buckets:
+            buckets[b] = [o, h, l, c]; order.append(b)
+        else:
+            agg = buckets[b]
+            agg[1] = max(agg[1], h); agg[2] = min(agg[2], l); agg[3] = c
+    return [(b, buckets[b][0], buckets[b][1], buckets[b][2], buckets[b][3]) for b in order]
+
+
+def get_ohlc_tf(tf):
+    """Bougies (ts,o,h,l,c) pour un timeframe. 4h reconstruit depuis le 1h."""
+    if tf == "4h":
+        return resample(fetch_ohlc4("60m", "6mo"), 4 * 3600)
+    yf_tf = "60m" if tf in ("1h", "60m") else tf
+    rng = {"15m": "1mo", "30m": "1mo", "60m": "3mo", "1h": "3mo"}.get(tf, "1mo")
+    return fetch_ohlc4(yf_tf, rng)
 
 
 def rsi_series(closes, period=14):
@@ -205,8 +245,66 @@ def detect_ichimoku(rows, tf):
     return events
 
 
+# ---------- Order Blocks (Smart Money) ----------
+def detect_order_blocks(rows, tf):
+    """OB = derniere bougie opposee avant une impulsion qui casse la structure.
+    Alerte quand le prix ENTRE (mitige) pour la 1re fois dans un OB non teste."""
+    n = len(rows)
+    if n < 10:
+        return []
+    tfsec = tf_seconds(tf)
+    now = time.time()
+    L = None
+    for i in range(n - 1, -1, -1):
+        if rows[i][0] + tfsec <= now:
+            L = i
+            break
+    if L is None or L < 5:
+        return []
+    comp = rows[L][0] + tfsec
+    if not (now - ICHI_WINDOW_MIN * 60 < comp <= now):
+        return []   # la bougie de mitigation doit venir de cloturer -> anti-doublon
+
+    op = lambda k: rows[k][1]
+    hi = lambda k: rows[k][2]
+    lo = lambda k: rows[k][3]
+    cl = lambda k: rows[k][4]
+    overlap = lambda k, zl, zh: lo(k) <= zh and hi(k) >= zl
+
+    start = max(1, L - OB_LOOKBACK)
+    rngs = [hi(k) - lo(k) for k in range(start, L + 1)]
+    avg = sum(rngs) / len(rngs) if rngs else 0
+    if avg <= 0:
+        return []
+
+    events = []
+    for i in range(start, L - 1):
+        jmax = min(i + 3, L - 1)
+        if i + 1 > jmax:
+            continue
+        # OB haussier (zone de demande) : bougie baissiere puis impulsion up
+        if cl(i) < op(i) and cl(i + 1) > op(i + 1):
+            mh = max(hi(k) for k in range(i + 1, jmax + 1))
+            if mh > hi(i) and (mh - cl(i)) > OB_DISPL * avg:
+                zl, zh = lo(i), hi(i)
+                if not any(overlap(k, zl, zh) for k in range(i + 1, L)) and overlap(L, zl, zh):
+                    events.append((tf, "haussier (demande) \U0001F7E2", "achat", zl, zh))
+                    continue
+        # OB baissier (zone d'offre) : bougie haussiere puis impulsion down
+        if cl(i) > op(i) and cl(i + 1) < op(i + 1):
+            ml = min(lo(k) for k in range(i + 1, jmax + 1))
+            if ml < lo(i) and (cl(i) - ml) > OB_DISPL * avg:
+                zl, zh = lo(i), hi(i)
+                if not any(overlap(k, zl, zh) for k in range(i + 1, L)) and overlap(L, zl, zh):
+                    events.append((tf, "baissier (offre) \U0001F534", "vente", zl, zh))
+
+    price = cl(L)
+    events.sort(key=lambda e: min(abs(price - e[3]), abs(price - e[4])))
+    return events[:2]
+
+
 # ---------- message ----------
-def build_alert(level_events, rsi_events, ichi_events, price):
+def build_alert(level_events, rsi_events, ichi_events, ob_events, price):
     f = lambda x: ("{:,.1f}".format(x)).replace(",", " ")
     L = ["<b>\U0001F6A8 ALERTE GOLD</b>"]
     L.append(f"Prix actuel : <b>{f(price)}$</b>")
@@ -226,6 +324,11 @@ def build_alert(level_events, rsi_events, ichi_events, price):
         L.append("<b>☁️ Ichimoku</b>")
         for tf, label, biais in ichi_events:
             L.append(f"• [{tf}] {label} — biais technique {biais}")
+        L.append("")
+    if ob_events:
+        L.append("<b>\U0001F4E6 Order Block (entree du prix)</b>")
+        for tf, label, biais, zl, zh in ob_events:
+            L.append(f"• [{tf}] OB {label} {f(zl)}–{f(zh)} — biais {biais}")
         L.append("")
     L.append(gr.DISCLAIMER)
     return "\n".join(L)
@@ -252,6 +355,9 @@ def main():
             rows = fetch_ohlc_series(tf, rng)
             for label, biais in detect_ichimoku(rows, tf):
                 ichi_events.append((tf, label, biais))
+        ob_events = []
+        for tf in OB_TFS:
+            ob_events += detect_order_blocks(get_ohlc_tf(tf), tf)
     except Exception as e:
         print(f"ERREUR data: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
@@ -263,11 +369,11 @@ def main():
     level_events = detect_levels(candles5, key_levels(a))
     rsi_events = detect_rsi(candles_rsi)
 
-    if not level_events and not rsi_events and not ichi_events:
-        print("Aucun evenement (niveau/RSI/Ichimoku) sur la periode. Rien envoye.")
+    if not level_events and not rsi_events and not ichi_events and not ob_events:
+        print("Aucun evenement (niveau/RSI/Ichimoku/OB) sur la periode. Rien envoye.")
         return
 
-    msg = build_alert(level_events, rsi_events, ichi_events, candles5[-1][1])
+    msg = build_alert(level_events, rsi_events, ichi_events, ob_events, candles5[-1][1])
     if args.dry_run:
         print(msg)
     else:
