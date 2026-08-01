@@ -22,9 +22,20 @@ TOUCH_EPS = float(os.environ.get("ALERT_TOUCH_EPS", "1.5"))
 RSI_TF = os.environ.get("RSI_TF", "15m")          # timeframe du RSI intraday
 RSI_OB = float(os.environ.get("RSI_OB", "70"))    # seuil surachat
 RSI_OS = float(os.environ.get("RSI_OS", "30"))    # seuil survente
-ICHI_TF = os.environ.get("ICHI_TF", "60m")        # timeframe Ichimoku
-ICHI_RANGE = os.environ.get("ICHI_RANGE", "3mo")
+# Ichimoku multi-timeframes : liste "tf:range" separee par des virgules.
+ICHI_TFS = os.environ.get("ICHI_TFS", "15m:1mo,60m:3mo")
 ICHI_WINDOW_MIN = float(os.environ.get("ICHI_WINDOW_MIN", "16"))  # anti-doublon
+
+
+def parse_ichi_tfs():
+    out = []
+    for part in ICHI_TFS.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        tf, rng = part.split(":")
+        out.append((tf.strip(), rng.strip()))
+    return out
 
 
 def tf_seconds(tf):
@@ -150,13 +161,13 @@ def ichimoku(rows):
     return tenkan, kijun, spanA, spanB
 
 
-def detect_ichimoku(rows):
+def detect_ichimoku(rows, tf):
     n = len(rows)
     if n < 80:
         return []
     tenkan, kijun, spanA, spanB = ichimoku(rows)
     now = time.time()
-    tfsec = tf_seconds(ICHI_TF)
+    tfsec = tf_seconds(tf)
 
     # derniere bougie COMPLETE (close time = ts + tfsec deja passe)
     last = None
@@ -212,9 +223,9 @@ def build_alert(level_events, rsi_events, ichi_events, price):
             L.append(f"• Zone <b>{label}</b> (RSI {val:.1f}) — biais technique {biais}")
         L.append("")
     if ichi_events:
-        L.append(f"<b>☁️ Ichimoku {ICHI_TF}</b>")
-        for label, biais in ichi_events:
-            L.append(f"• {label} — biais technique {biais}")
+        L.append("<b>☁️ Ichimoku</b>")
+        for tf, label, biais in ichi_events:
+            L.append(f"• [{tf}] {label} — biais technique {biais}")
         L.append("")
     L.append(gr.DISCLAIMER)
     return "\n".join(L)
@@ -236,7 +247,11 @@ def main():
         a = gr.analyse()
         candles5 = fetch_series("5m", "1d")
         candles_rsi = fetch_series(RSI_TF, "5d")
-        candles_ichi = fetch_ohlc_series(ICHI_TF, ICHI_RANGE)
+        ichi_events = []
+        for tf, rng in parse_ichi_tfs():
+            rows = fetch_ohlc_series(tf, rng)
+            for label, biais in detect_ichimoku(rows, tf):
+                ichi_events.append((tf, label, biais))
     except Exception as e:
         print(f"ERREUR data: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
@@ -247,7 +262,6 @@ def main():
 
     level_events = detect_levels(candles5, key_levels(a))
     rsi_events = detect_rsi(candles_rsi)
-    ichi_events = detect_ichimoku(candles_ichi)
 
     if not level_events and not rsi_events and not ichi_events:
         print("Aucun evenement (niveau/RSI/Ichimoku) sur la periode. Rien envoye.")
